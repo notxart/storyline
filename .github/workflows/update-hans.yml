@@ -1,0 +1,159 @@
+# This file is part of ptsd project which is released under GNU GPL v3.0.
+# Copyright (c) 2025- Limbus Traditional Mandarin
+
+name: Sync Storyline Hans
+
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.final_check.outputs.result }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-repo
+
+      - name: Setup orphan branch
+        run: |
+          cd main-repo
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git config --local core.autocrlf false
+
+          if ! git ls-remote --exit-code origin storyline; then
+            git checkout --orphan storyline
+            git rm -rf . || true
+            touch .gitkeep
+            git add .gitkeep
+            git commit -m "Initial orphan commit"
+            git push origin storyline
+          fi
+
+      - name: Clone source repo
+        run: |
+          mkdir -p tmp_source
+          cd tmp_source
+          git init
+          git remote add origin https://github.com/LocalizeLimbusCompany/LLC_Release.git
+          git config core.sparseCheckout true
+          echo "CN/" >> .git/info/sparse-checkout
+          git pull --depth=1 origin main
+
+          mkdir -p ../Hans
+          rsync -av --delete CN/ ../Hans/
+
+      - name: Checkout storyline branch
+        uses: actions/checkout@v4
+        with:
+          ref: storyline
+          path: storyline
+          fetch-depth: 0
+          sparse-checkout: |
+            /Hans/**
+            /file-diff.txt
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare workspace
+        run: |
+          mkdir -p storyline/Hans
+          if [ -d "storyline/Hans" ]; then
+            find storyline/Hans -mindepth 1 -delete
+          fi
+
+      - name: Update files
+        run: rsync -av --delete Hans/ storyline/Hans/
+
+      - name: Generate content hash
+        id: hash_generator
+        run: |
+          cd storyline
+          git config --local core.autocrlf false
+          git add --sparse Hans/ &>/dev/null || true
+
+          CURRENT_HASH=$(git ls-files -s Hans/ 2>/dev/null | git hash-object --stdin)
+          echo "current_hash=${CURRENT_HASH}" >> $GITHUB_OUTPUT
+
+          if git rev-parse HEAD &>/dev/null; then
+            PREV_HASH=$(git ls-tree HEAD Hans/ 2>/dev/null | git hash-object --stdin)
+            echo "prev_hash=${PREV_HASH}" >> $GITHUB_OUTPUT
+          else
+            echo "prev_hash=empty" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate diff file
+        run: |
+          cd storyline
+
+          # Only generate diff files if the hashes are different
+          if [[ "${{ steps.hash_generator.outputs.current_hash }}" != "${{ steps.hash_generator.outputs.prev_hash }}" ]]; then
+            git diff --cached --name-status | \
+            awk -F'\t' '/^(A|M|D)/ {gsub("Hans/", "", $2); print $1 "\t" $2}' > ../file-diff.txt
+          else
+            echo "No changes detected"
+          fi
+
+      - name: Final commit check
+        id: final_check
+        run: |
+          if [[ -f file-diff.txt && -s file-diff.txt ]]; then
+            echo "result=true" >> $GITHUB_OUTPUT
+            cd storyline
+            mv ../file-diff.txt .
+            git add --sparse file-diff.txt
+            git add --sparse Hans/
+            git config user.name "GitHub Action"
+            git config user.email "action@github.com"
+            git commit -m "Auto-update Hans storyline files $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            git push origin storyline
+          else
+            echo "result=false" >> $GITHUB_OUTPUT
+            cd storyline
+            git reset --hard
+            git clean -fd
+          fi
+
+      - name: Cleanup
+        run: rm -rf tmp_source
+
+  process_translations:
+    needs: sync
+    if: ${{ needs.sync.outputs.has_changes == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      PARATRANZ_TOKENS: ${{ secrets.PARATRANZ_TOKENS }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          path: main-repo
+
+      - name: Checkout storyline
+        uses: actions/checkout@v4
+        with:
+          ref: storyline
+          path: storyline
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: main-repo
+        run: uv sync
+
+      - name: Run translator
+        working-directory: main-repo
+        run: uv run ptsd upload --storyline-folder ../storyline
+        env:
+          PARATRANZ_TOKENS: ${{ env.PARATRANZ_TOKENS }}
