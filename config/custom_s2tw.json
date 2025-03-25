@@ -7,11 +7,11 @@
       "dicts": [
         {
           "type": "ocd2",
-          "file": ".venv/lib/python3.12/site-packages/opencc/clib/share/opencc/STPhrases.ocd2"
+          "file": "data/opencc/CustomPhrases.ocd2"
         },
         {
           "type": "ocd2",
-          "file": "data/opencc/CustomPhrases.ocd2"
+          "file": ".venv/lib/python3.12/site-packages/opencc/clib/share/opencc/STPhrases.ocd2"
         }
       ]
     }
